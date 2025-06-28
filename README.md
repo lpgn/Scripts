@@ -1,132 +1,69 @@
-# USB Device Manager for WSL
+# WSL USB Bridge
 
-This folder contains PowerShell scripts for managing USB devices between Windows and WSL (Windows Subsystem for Linux).
+A set of PowerShell scripts to seamlessly share USB devices, especially serial devices like Arduino, ESP32, and FTDI converters, from Windows to WSL (Windows Subsystem for Linux).
+
+This tool automates the entire process of binding the device on Windows and setting it up with the correct drivers and permissions in WSL.
+
+## Key Features
+
+- **Interactive Menu**: A simple, number-based menu to view, attach, and detach devices.
+- **Automated WSL Setup**: When you attach a device, the script automatically:
+  - Loads the necessary kernel modules in WSL (`ftdi_sio`, `cp210x`, etc.).
+  - Adds your user to the `dialout` group for permanent serial port access.
+  - Sets temporary `read/write` permissions on the device file (`/dev/ttyUSB0`, etc.) so it works immediately.
+- **`sudo` Password Prompt**: Securely prompts for your password within the WSL terminal for commands that require elevation.
+- **No More "Permission Denied"**: Solves the common `[Errno 13] Permission denied` error when accessing serial ports in WSL.
+- **Self-Contained**: Can automatically install the required `usbipd-win` dependency using `winget`.
+
+---
 
 ## Scripts Overview
 
-### 🚀 Main Scripts
+1.  **`direct-usb-manager.ps1` - (Recommended Start Point)**
+    - The main launcher script. It displays the current device status and provides a menu to access all other functionality. It does not require admin rights to run, but will prompt for them when needed.
 
-1. **`direct-usb-manager.ps1`** - **RECOMMENDED**
-   - Shows USB device status without requiring admin privileges
-   - Provides menu options for different operations
-   - Best starting point for most users
+2.  **`simple-usb-manager.ps1` - (The Interactive Core)**
+    - The core interactive manager that allows you to select devices to attach or detach. It is launched automatically by the main script.
 
-2. **`run-cp2102-admin.ps1`** 
-   - Auto-elevates to administrator privileges
-   - Launches the interactive USB manager
-   - Good for creating shortcuts
+3.  **`run-cp2102-admin.ps1` - (Admin Shortcut)**
+    - A simple convenience script that re-launches the main `direct-usb-manager.ps1` with Administrator privileges. Useful for creating desktop shortcuts.
 
-3. **`simple-usb-manager.ps1`**
-   - Full-featured interactive USB manager
-   - Number-based device selection (no arrow key issues)
-   - Requires administrator privileges
+---
 
 ## Quick Start
 
-1. **For first-time users:**
-   ```powershell
-   .\direct-usb-manager.ps1
-   ```
+1.  Open a PowerShell terminal.
+2.  Navigate to the script directory.
+3.  Run the main launcher:
 
-2. **For regular use:**
-   ```powershell
-   .\run-cp2102-admin.ps1
-   ```
+    ```powershell
+    .\direct-usb-manager.ps1
+    ```
 
-## Features
+4.  Select **Option 2 (Quick attach)** to see a list of devices.
+5.  Choose the device you want to share.
+6.  When prompted to **"Setup device in Linux?"**, type `y` and press Enter.
+7.  Enter your **Linux `sudo` password** when prompted in the terminal.
 
-### ✅ What these scripts do:
-- List all connected USB devices
-- Show current sharing status (Not shared / Shared / Attached)
-- Bind and attach USB devices to WSL
-- Detach USB devices from WSL
-- Automatically load appropriate Linux drivers
-- Support for common USB-to-serial chips (FTDI, CP210x, CH341)
+Your device is now ready to use in WSL!
 
-### 🎯 Device Status Colors:
-- **White** = Not shared with WSL
-- **Yellow** = Shared (bound) but not attached
-- **Green** = Attached and available in WSL
+## How It Works
 
-### 🎮 Controls (simple-usb-manager.ps1):
-- `1-9` = Select device by number
-- `A` = Switch to ATTACH mode
-- `D` = Switch to DETACH mode  
-- `R` = Refresh device list
-- `Q` = Quit
+The process involves two stages:
+
+1.  **Windows Host**: The PowerShell script uses the `usbipd-win` tool to bind the USB device's interface, making it available for sharing over an IP network (in this case, the local virtual network for WSL).
+
+2.  **WSL Guest**: The script then executes a temporary `bash` script inside WSL. This script:
+    a. Probes the appropriate kernel modules (`modprobe`).
+    b. Adds the user to the `dialout` group (`usermod`).
+    c. Finds the device name (e.g., `ttyUSB0`) from kernel messages (`dmesg`).
+    d. Sets permissions on the device file (`chmod 666`).
+
+This two-step process ensures the device is not only connected but also immediately usable.
 
 ## Requirements
 
-- **Windows 10/11** with WSL 2
-- **Administrator privileges** (for USB device management)
-- **usbipd-win** tool (scripts can install this automatically)
-
-## Installation
-
-1. Copy scripts to a folder (like `C:\Users\[username]\Scripts\`)
-2. Run PowerShell as Administrator
-3. Navigate to the folder
-4. Run `.\direct-usb-manager.ps1` to get started
-
-## Common Use Cases
-
-### Sharing a USB-to-Serial Converter
-1. Connect your device to Windows
-2. Run `.\direct-usb-manager.ps1`
-3. Select option 1 (Interactive Manager)
-4. Choose your device from the list
-5. Device will appear in WSL at `/dev/ttyUSB0` or similar
-
-### Arduino/ESP32 Development
-- Works with CP2102, FTDI FT232, CH340/CH341 chips
-- Automatically loads correct drivers in Linux
-- Compatible with Arduino IDE, PlatformIO, esptool, etc.
-
-### Removing Device Sharing
-1. Run the interactive manager
-2. Press `D` to switch to DETACH mode
-3. Select the device to remove
-
-## Troubleshooting
-
-### "usbipd not found"
-- Run option 3 in direct-usb-manager.ps1 to install usbipd-win
-- Or manually: `winget install usbipd`
-
-### "Administrator privileges required"
-- Right-click PowerShell and select "Run as Administrator"
-- Or use `run-cp2102-admin.ps1` which auto-elevates
-
-### Device not appearing in WSL
-- Check if device shows as "Attached" in Windows
-- Run the Linux setup option when prompted
-- Verify with `wsl ls /dev/ttyUSB*`
-
-## Technical Details
-
-### Supported Device Types
-- **FTDI** (VID:0403) → `ftdi_sio` driver
-- **CP210x** (VID:10c4) → `cp210x` driver  
-- **CH341** (VID:1a86) → `ch341` driver
-- **Generic** → loads common USB serial drivers
-
-### Linux Device Paths
-- USB-to-serial devices typically appear as:
-  - `/dev/ttyUSB0`, `/dev/ttyUSB1`, etc.
-  - `/dev/ttyACM0`, `/dev/ttyACM1`, etc.
-
-### Usage in WSL
-```bash
-# Test connection
-sudo screen /dev/ttyUSB0 115200
-
-# Alternative terminal
-sudo minicom -D /dev/ttyUSB0
-
-# Allow user access (optional)
-sudo chmod 666 /dev/ttyUSB0
-sudo usermod -a -G dialout $USER
-```
-
-## Created by
-USB Manager scripts for WSL device sharing - Created $(Get-Date -Format "yyyy-MM-dd")
+- Windows 10/11 with WSL 2 installed.
+- `usbipd-win` (the script can install this for you via `winget`).
+- Administrator privileges in PowerShell for sharing operations.
+- Your user password for `sudo` commands within WSL.
