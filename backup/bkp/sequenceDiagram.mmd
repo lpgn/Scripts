@@ -1,0 +1,40 @@
+sequenceDiagram
+    participant PS as PowerShell Script
+    participant WSL as WSL Environment
+    participant Linux as Linux Kernel
+    participant DevFS as Device FileSystem
+
+    PS->>WSL: Test connection: echo "WSL is working"
+    WSL-->>PS: Connection confirmed
+    
+    Note over PS,Linux: Step 1: Load USB Serial Drivers
+    PS->>WSL: Analyze VID:PID (0403:*, 10c4:*, 1a86:*)
+    PS->>WSL: sudo modprobe ftdi_sio/cp210x/ch341
+    WSL->>Linux: Load appropriate driver module
+    Linux-->>WSL: Driver loaded successfully
+    
+    Note over PS,Linux: Step 2: User Group Management
+    PS->>WSL: groups $USER | grep -q dialout
+    WSL-->>PS: Check if user in dialout group
+    alt User not in dialout group
+        PS->>WSL: sudo usermod -a -G dialout $USER
+        WSL->>Linux: Add user to dialout group
+        Linux-->>WSL: Group membership updated
+    end
+    
+    Note over PS,DevFS: Step 3: Device Node Discovery
+    PS->>WSL: Complex bash script to find device
+    WSL->>DevFS: Check dmesg for "now attached to tty"
+    DevFS-->>WSL: Search /dev/ttyUSB*, /dev/ttyACM*
+    WSL-->>PS: Return device path (e.g., /dev/ttyUSB0)
+    
+    Note over PS,DevFS: Step 4: Permission Setting
+    PS->>WSL: sudo chmod 666 /dev/ttyUSB0
+    WSL->>DevFS: Set read/write permissions for all users
+    DevFS-->>WSL: Permissions updated
+    
+    Note over PS,Linux: Step 5: Verification
+    PS->>WSL: dmesg | grep -iE "usb|serial|tty" | tail -3
+    WSL->>Linux: Get recent kernel messages
+    Linux-->>WSL: USB/serial activity logs
+    WSL-->>PS: Display verification info

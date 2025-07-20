@@ -34,7 +34,7 @@ function Get-USBDevices {
         if ($line -match "Connected:") { $inConnected = $true; continue }
         if ($line -match "Persisted:") { $inConnected = $false; continue }
         
-        if ($inConnected -and $line -match "^\s*([\d-]+)\s+([\da-fA-F:]+)\s+(.*?)\s+((?:Not shared|Shared|Attached)(?:\s+to .*)?)$") {
+        if ($inConnected -and $line -match "^\s*([\d-]+)\s+([\da-fA-F:]+)\s+(.*?)\s+((?:Not shared|Shared|Attached).*?)$") {
             $devices += [PSCustomObject]@{
                 BUSID       = $matches[1]
                 VIDPID      = $matches[2]

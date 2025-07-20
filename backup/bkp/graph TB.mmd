@@ -1,0 +1,35 @@
+graph TB
+    subgraph "📋 Device Management"
+        GetDevices[Get-USBDevices<br/>Parse usbipd output]
+        AttachFunc[Invoke-AttachDevice<br/>usbipd attach command]
+        DetachFunc[Invoke-DetachDevice<br/>usbipd detach command]
+        SetupFunc[Invoke-SetupLinuxDevice<br/>Driver & permission setup]
+    end
+    
+    subgraph "🎮 User Interface"
+        ShowMenu[Show-Menu<br/>Display arrow-key menu]
+        GetChoice[Get-UserChoice<br/>Handle keyboard input]
+        DeviceMenu[Show-DeviceMenu<br/>List devices with status]
+        ActionMenu[Show-DeviceActions<br/>Attach/Detach/Setup options]
+    end
+    
+    subgraph "🛠️ Linux Integration"
+        WSLTest[WSL Connection Test]
+        DriverLoad[Driver Loading Logic<br/>VID:PID based selection]
+        GroupMgmt[Dialout Group Management]
+        DeviceFind[Device Node Discovery<br/>Bash one-liner scripts]
+        PermSet[Permission Setting<br/>chmod 666 operations]
+    end
+    
+    GetDevices --> DeviceMenu
+    DeviceMenu --> GetChoice
+    GetChoice --> ActionMenu
+    ActionMenu --> AttachFunc
+    ActionMenu --> DetachFunc
+    ActionMenu --> SetupFunc
+    
+    SetupFunc --> WSLTest
+    WSLTest --> DriverLoad
+    DriverLoad --> GroupMgmt
+    GroupMgmt --> DeviceFind
+    DeviceFind --> PermSet

@@ -1,0 +1,20 @@
+flowchart TD
+    Start([🔌 USB Manager v2.0]) --> Scan[📋 Scan Devices]
+    Scan --> Summary[📊 Device Summary]
+    Summary --> Select{Select Device}
+    
+    Select -->|Attached| Configure[🛠️ Configure Linux]
+    Select -->|Shared| Attach[🔗 Attach to WSL]
+    Select -->|Unshared| Share[📤 Share Device]
+    
+    Configure --> Quick[🚀 Quick Setup]
+    Quick --> Done[✅ Complete]
+    
+    Attach --> Done
+    Share --> Done
+    Done --> Summary
+    
+    style Start fill:#e1f5fe
+    style Summary fill:#f3e5f5
+    style Quick fill:#fff8e1
+    style Done fill:#e8f5e8
