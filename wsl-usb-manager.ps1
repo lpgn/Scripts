@@ -204,29 +204,11 @@ function Invoke-DetachDevice {
 function Invoke-SetupLinuxDevice {
     param([PSCustomObject]$Device)
     
-    if (-not $Device.IsAttached) {
-        Clear-Host
-        Write-Host "❌ Device Not Attached to WSL" -ForegroundColor Red
-        Write-Host "============================" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "The device must be attached to WSL before Linux setup." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "Please:" -ForegroundColor White
-        Write-Host "1. Go back to the device menu" -ForegroundColor Gray  
-        Write-Host "2. Select 'Attach to WSL' first" -ForegroundColor Gray
-        Write-Host "3. Then run 'Configure for Linux'" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "Press any key to go back..." -ForegroundColor Gray
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        return
-    }
-    
     Clear-Host
     Write-Host "Linux Device Setup" -ForegroundColor Cyan
     Write-Host "==================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Device: $($Device.Description)" -ForegroundColor Yellow
-    Write-Host "✅ Device is attached to WSL" -ForegroundColor Green
     Write-Host ""
     Write-Host "This will:" -ForegroundColor White
     Write-Host "1. Load USB serial drivers" -ForegroundColor Gray
@@ -260,24 +242,29 @@ function Invoke-SetupLinuxDevice {
     
     # Run commands step by step
     try {
+        # First, establish a sudo session with extended timeout
+        Write-Host "🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
+        Write-Host "   Establishing admin session for all subsequent commands..." -ForegroundColor Gray
+        $sudoSetup = wsl.exe bash -c "sudo -v && sudo -s <<< 'echo Admin session ready'" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "❌ Failed to establish admin session: $sudoSetup" -ForegroundColor Red
+            Start-Sleep 3
+            return
+        }
+        Write-Host "✅ Admin session established" -ForegroundColor Green
+        Write-Host ""
+        
         Write-Host "[1/4] Loading USB serial drivers..." -ForegroundColor Cyan
         
-        # Determine which driver to load based on VID:PID and device description
+        # Determine which driver to load based on VID:PID
         $driverCmd = switch -wildcard ($Device.VIDPID) {
             "0403:*" { "sudo modprobe ftdi_sio" }
             "10c4:*" { "sudo modprobe cp210x" }
             "1a86:*" { "sudo modprobe ch341" }
-            "303a:*" { "sudo modprobe cdc_acm; sudo modprobe cp210x" } # ESP32 devices
-            default  { 
-                if ($Device.Description -match "JTAG|debug|FT232|FT2232") {
-                    "sudo modprobe ftdi_sio; sudo modprobe usbserial"
-                } else {
-                    "sudo modprobe usbserial; sudo modprobe ftdi_sio; sudo modprobe cp210x"
-                }
-            }
+            default  { "sudo modprobe usbserial; sudo modprobe ftdi_sio; sudo modprobe cp210x" }
         }
         Write-Host ""
-        Write-Host "🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
+        Write-Host "🔑 ONE PASSWORD for all admin commands (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
         Write-Host "      Running: $driverCmd" -ForegroundColor Gray
         $driverResult = wsl.exe bash -c $driverCmd 2>&1
         if ($LASTEXITCODE -eq 0) {
@@ -319,111 +306,133 @@ sudo usermod -a -G dialout $USER
         Write-Host "[3/4] Looking for device file..." -ForegroundColor Cyan
         
         # Wait a moment for device to appear
-        Start-Sleep 3
+        Start-Sleep 2
         
-        # More comprehensive device search (force bash)
-        $deviceSearchScript = @'
-echo "=== USB Device Detection ==="
-
-# Check what USB devices are connected
-echo "USB devices in WSL:"
-lsusb 2>/dev/null || echo "lsusb not available"
-
-echo ""
-echo "All tty devices:"
-ls -la /dev/tty* 2>/dev/null | grep -E "(USB|ACM|serial)" || echo "No USB/ACM serial devices found"
-
-echo ""
-echo "Recent dmesg (USB/serial related):"
-dmesg | grep -iE "(usb|serial|tty)" | tail -10
-
-echo ""
-# Try different approaches for device detection
-if ls /dev/ttyUSB* >/dev/null 2>&1; then
-    DEVICE=$(ls /dev/ttyUSB* | head -n 1)
-    echo "found_ttyusb:$DEVICE"
-elif ls /dev/ttyACM* >/dev/null 2>&1; then
-    DEVICE=$(ls /dev/ttyACM* | head -n 1)  
-    echo "found_ttyacm:$DEVICE"
-else
-    echo "not_found"
-fi
-'@
-        $deviceSearch = wsl.exe bash -c $deviceSearchScript 2>&1
+        # Smart device detection - focus on recently attached or USB-related devices
+        Write-Host "      Checking for serial devices..." -ForegroundColor Gray
         
-        if ($deviceSearch -match "found_in_dmesg:(.+)") {
-            $devicePath = $matches[1]
-            Write-Host "      ✅ Found device in dmesg: $devicePath" -ForegroundColor Green
-        } elseif ($deviceSearch -match "found_ttyusb:(.+)") {
-            $devicePath = $matches[1]
-            Write-Host "      ✅ Found USB device: $devicePath" -ForegroundColor Green
-        } elseif ($deviceSearch -match "found_ttyacm:(.+)") {
-            $devicePath = $matches[1]
-            Write-Host "      ✅ Found ACM device: $devicePath" -ForegroundColor Green
-        } else {
-            Write-Host "      ❌ Device file not found" -ForegroundColor Red
-            Write-Host ""
-            
-            # ESP32-specific auto-fix
-            if ($Device.VIDPID -match "303a:") {
-                Write-Host "      🔧 ESP32 detected - Attempting auto-fix..." -ForegroundColor Yellow
-                
-                $autoFixOptions = @(
-                    "Auto-fix ESP32 device (recommended)",
-                    "Skip and continue"
-                )
-                
-                $choice = Get-UserChoice -Items $autoFixOptions -Title "ESP32 Device Not Found"
-                
-                if ($choice -eq 0) {
-                    Write-Host "      Trying ESP32 auto-fix..." -ForegroundColor Yellow
-                    Write-Host "      🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
+        # First, try to find recently attached devices from dmesg (most reliable)
+        $recentDevices = wsl.exe bash -c "dmesg | grep -i 'now attached to tty' | tail -5 | grep -o 'tty[A-Z0-9]*[0-9]'" 2>&1
+        
+        $deviceList = @()
+        $uniqueDevices = @{}  # Use hashtable to avoid duplicates
+        
+        if ($recentDevices) {
+            Write-Host "      Found recently attached devices from kernel messages:" -ForegroundColor Cyan
+            foreach ($line in $recentDevices) {
+                $lineStr = $line.ToString().Trim()
+                if ($lineStr -match "^tty[A-Z]") {
+                    $devicePath = "/dev/$lineStr"
                     
-                    # Try the most common ESP32 fixes automatically
-                    $autoFixScript = @'
-echo "Trying CDC-ACM registration..."
-echo '303a 1001' | sudo tee /sys/bus/usb/drivers/cdc_acm/new_id 2>/dev/null
-sleep 1
-echo "Trying CP210x registration..."  
-echo '303a 1001' | sudo tee /sys/bus/usb-serial/drivers/cp210x/new_id 2>/dev/null
-sleep 2
-echo "Checking for devices..."
-ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -n 1 || echo "not_found"
-'@
-                    
-                    $fixResult = wsl.exe bash -c $autoFixScript 2>&1
-                    $deviceCheck = $fixResult -split "`n" | Where-Object { $_ -match "/dev/tty" } | Select-Object -First 1
-                    
-                    if ($deviceCheck) {
-                        $devicePath = $deviceCheck.Trim()
-                        Write-Host "      ✅ Device found at: $devicePath" -ForegroundColor Green
-                    } else {
-                        Write-Host "      ❌ Auto-fix didn't work - device may need manual configuration" -ForegroundColor Red
+                    # Skip if we already found this device
+                    if ($uniqueDevices.ContainsKey($devicePath)) {
+                        continue
                     }
-                } else {
-                    Write-Host "      Skipping auto-fix" -ForegroundColor Gray
+                    
+                    # Verify the device actually exists
+                    $exists = wsl.exe bash -c "[ -e '$devicePath' ] && echo 'exists'" 2>&1
+                    if ($exists -match "exists") {
+                        $uniqueDevices[$devicePath] = $true
+                        $deviceList += $devicePath
+                        Write-Host "         $devicePath ✅" -ForegroundColor Green
+                    } else {
+                        Write-Host "         $devicePath ❌ (not found)" -ForegroundColor Gray
+                    }
                 }
-            } else {
-                Write-Host "      🔧 Non-ESP32 device - may need manual driver configuration" -ForegroundColor Yellow
-                Write-Host "         VID:PID: $($Device.VIDPID)" -ForegroundColor Gray
             }
+        }
+        
+        # If no recent devices found, look for USB-specific devices only
+        if ($deviceList.Count -eq 0) {
+            Write-Host "      No recent devices found, checking USB-specific devices..." -ForegroundColor Yellow
             
-            if (-not $devicePath) { $devicePath = $null }
+            $usbSpecificDevices = wsl.exe bash -c "ls -1 /dev/tty* 2>/dev/null | grep -E '(ttyUSB|ttyACM)'" 2>&1
+            
+            if ($usbSpecificDevices) {
+                foreach ($line in $usbSpecificDevices) {
+                    $lineStr = $line.ToString().Trim()
+                    if ($lineStr -match "^/dev/tty(USB|ACM)[0-9]+$") {
+                        $deviceList += $lineStr
+                    }
+                }
+                
+                if ($deviceList.Count -gt 0) {
+                    Write-Host "      ✅ Found USB-specific devices:" -ForegroundColor Green
+                    foreach ($device in $deviceList) {
+                        Write-Host "         $device" -ForegroundColor Cyan
+                    }
+                }
+            }
+        }
+        
+        # Final fallback - show what's available but don't auto-configure everything
+        if ($deviceList.Count -eq 0) {
+            Write-Host "      ❌ No recently attached or USB devices found" -ForegroundColor Red
+            Write-Host "      Available serial devices (for reference):" -ForegroundColor Gray
+            wsl.exe bash -c "ls -1 /dev/tty* 2>/dev/null | grep -E '(ttyUSB|ttyACM|ttyS[0-9]|ttyAMA)' | head -10"
+            
+            $devicePath = $null
+        } else {
+            $devicePath = $deviceList[0]  # Primary device for compatibility
         }
         
         Write-Host ""
         Write-Host "[4/4] Setting device permissions..." -ForegroundColor Cyan
         
         if ($devicePath) {
-            Write-Host "      Setting permissions on $devicePath" -ForegroundColor Yellow
-            Write-Host "      🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
-            $chmodCmd = "sudo chmod 666 `"$devicePath`" && ls -l `"$devicePath`""
-            $permResult = wsl.exe bash -c $chmodCmd 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "      ✅ Permissions set successfully" -ForegroundColor Green
-                Write-Host "      Device info: $permResult" -ForegroundColor Gray
+            Write-Host "      Checking and setting permissions for all detected devices..." -ForegroundColor Yellow
+            
+            $devicesNeedingChanges = @()
+            
+            # First pass: check which devices actually need permission changes
+            foreach ($device in $deviceList) {
+                Write-Host "      Checking permissions for $device..." -ForegroundColor Gray
+                
+                # Get current permissions
+                $currentPerms = wsl.exe bash -c "stat -c '%a' '$device' 2>/dev/null" 2>&1
+                
+                if ($currentPerms -match "^[0-9]+$") {
+                    $currentPerms = $currentPerms.ToString().Trim()
+                    
+                    # We want 666 (rw-rw-rw-) permissions
+                    if ($currentPerms -eq "666") {
+                        Write-Host "         $device already has correct permissions (666) ✅" -ForegroundColor Green
+                    } else {
+                        Write-Host "         $device has permissions $currentPerms, needs change to 666" -ForegroundColor Yellow
+                        $devicesNeedingChanges += $device
+                    }
+                } else {
+                    Write-Host "         $device - couldn't check permissions, will attempt to set" -ForegroundColor Yellow
+                    $devicesNeedingChanges += $device
+                }
+            }
+            
+            # Second pass: only change permissions for devices that need it
+            if ($devicesNeedingChanges.Count -gt 0) {
+                Write-Host "      🔑 PASSWORD NEEDED: Setting permissions for $($devicesNeedingChanges.Count) device(s)" -ForegroundColor Yellow -BackgroundColor DarkRed
+                
+                $allPermissionsSet = $true
+                foreach ($device in $devicesNeedingChanges) {
+                    Write-Host "      Processing: $device" -ForegroundColor Gray
+                    $chmodCmd = "sudo chmod 666 `"$device`" && ls -l `"$device`""
+                    $permResult = wsl.exe bash -c $chmodCmd 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "      ✅ Permissions set: $device" -ForegroundColor Green
+                        Write-Host "         $permResult" -ForegroundColor Gray
+                    } else {
+                        Write-Host "      ❌ Failed to set permissions on $device : $permResult" -ForegroundColor Red
+                        $allPermissionsSet = $false
+                    }
+                }
             } else {
-                Write-Host "      ❌ Failed to set permissions: $permResult" -ForegroundColor Red
+                Write-Host "      ✅ All devices already have correct permissions!" -ForegroundColor Green
+                $allPermissionsSet = $true
+            }
+            
+            if ($allPermissionsSet) {
+                Write-Host "      ✅ All devices configured successfully!" -ForegroundColor Green
+            } else {
+                Write-Host "      ⚠️  Some devices may have permission issues" -ForegroundColor Yellow
             }
         } else {
             Write-Host "      ⚠️  Skipping permission setting (device path unknown)" -ForegroundColor Yellow
