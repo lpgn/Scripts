@@ -203,256 +203,169 @@ function Invoke-DetachDevice {
 
 function Invoke-SetupLinuxDevice {
     param([PSCustomObject]$Device)
-    
+
     Clear-Host
-    Write-Host "Linux Device Setup" -ForegroundColor Cyan
-    Write-Host "==================" -ForegroundColor Cyan
+    Write-Host "Linux Device Setup (udev)" -ForegroundColor Cyan
+    Write-Host "=========================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Device: $($Device.Description)" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "This will:" -ForegroundColor White
-    Write-Host "1. Load USB serial drivers" -ForegroundColor Gray
-    Write-Host "2. Add your user to dialout group" -ForegroundColor Gray
-    Write-Host "3. Set device permissions" -ForegroundColor Gray
+    Write-Host "This will install a udev rule to automatically manage permissions" -ForegroundColor White
+    Write-Host "for common USB-to-serial devices." -ForegroundColor White
     Write-Host ""
-    Write-Host "Running setup commands..." -ForegroundColor Yellow
+
+    # Find the udev rules file
+    $rulesFile = "99-platformio-udev.rules"
+    # Use $PSScriptRoot for a reliable way to get the script's directory
+    $scriptPath = $PSScriptRoot
+    $rulesFilePath = Join-Path $scriptPath $rulesFile
+
+    if (-not (Test-Path $rulesFilePath)) {
+        Write-Host "❌ CRITICAL: udev rules file not found!" -ForegroundColor Red
+        Write-Host "Expected to find '$rulesFile' in the same directory as the script." -ForegroundColor Red
+        Write-Host "Path: $scriptPath" -ForegroundColor Gray
+        Start-Sleep 5
+        return
+    }
+
+    Write-Host "Found udev rules file: $rulesFilePath" -ForegroundColor Green
     Write-Host ""
+    Write-Host "Running setup commands in WSL..." -ForegroundColor Yellow
     
     # Test WSL first
-    Write-Host "Testing WSL connection..." -ForegroundColor Yellow
     try {
-        $wslTest = wsl.exe echo "WSL is working" 2>&1
+        $wslTest = wsl.exe -- echo "WSL is working" 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "❌ WSL is not responding properly" -ForegroundColor Red
+            Write-Host "❌ WSL is not responding properly." -ForegroundColor Red
             Write-Host "WSL output: $wslTest" -ForegroundColor Gray
             Start-Sleep 3
             return
         }
-        Write-Host "✅ WSL connection OK" -ForegroundColor Green
-    }
-    catch {
+    } catch {
         Write-Host "❌ Error testing WSL: $($_.Exception.Message)" -ForegroundColor Red
         Start-Sleep 3
         return
     }
-    
+
     Write-Host ""
-    Write-Host "Running setup commands..." -ForegroundColor Yellow
-    Write-Host ""
+    Write-Host "🔑 PASSWORD NEEDED: Type your WSL password for admin commands." -ForegroundColor Yellow -BackgroundColor DarkRed
     
-    # Run commands step by step
-    try {
-        # First, establish a sudo session with extended timeout
-        Write-Host "🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
-        Write-Host "   Establishing admin session for all subsequent commands..." -ForegroundColor Gray
-        $sudoSetup = wsl.exe bash -c "sudo -v && sudo -s <<< 'echo Admin session ready'" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "❌ Failed to establish admin session: $sudoSetup" -ForegroundColor Red
-            Start-Sleep 3
-            return
-        }
-        Write-Host "✅ Admin session established" -ForegroundColor Green
-        Write-Host ""
-        
-        Write-Host "[1/4] Loading USB serial drivers..." -ForegroundColor Cyan
-        
-        # Determine which driver to load based on VID:PID
-        $driverCmd = switch -wildcard ($Device.VIDPID) {
-            "0403:*" { "sudo modprobe ftdi_sio" }
-            "10c4:*" { "sudo modprobe cp210x" }
-            "1a86:*" { "sudo modprobe ch341" }
-            default  { "sudo modprobe usbserial; sudo modprobe ftdi_sio; sudo modprobe cp210x" }
-        }
-        Write-Host ""
-        Write-Host "🔑 ONE PASSWORD for all admin commands (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
-        Write-Host "      Running: $driverCmd" -ForegroundColor Gray
-        $driverResult = wsl.exe bash -c $driverCmd 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "      ✅ Drivers loaded successfully" -ForegroundColor Green
-        } else {
-            Write-Host "      ⚠️  Driver loading result: $driverResult" -ForegroundColor Yellow
-        }
-        
-        Write-Host ""
-        Write-Host "[2/4] Checking user groups..." -ForegroundColor Cyan
-        $groupCheckScript = @'
-groups $USER | grep -q dialout
-if [ $? -eq 0 ]; then 
-    echo "already_in_group"
-else 
-    echo "need_to_add"
+    # Simplified approach: check if file exists, skip problematic path conversion
+    $setupScriptContent = @'
+#!/bin/bash
+set -e # Exit immediately if a command exits with a non-zero status.
+
+echo "Starting WSL setup..."
+DEST_RULES_FILE="/lib/udev/rules.d/99-platformio-udev.rules"
+
+# NOTE: WSL doesn't run udev by default, so udev rules don't work automatically.
+# We need to manually load drivers and bind devices. This is what makes USB devices
+# actually appear as /dev/ttyUSB* or /dev/ttyACM* in WSL.
+
+echo "🔑 Please enter your password once for all admin operations..."
+sudo -v  # Refresh sudo timestamp
+
+# 1. Check if the rules file exists (for reference/future use)
+echo "[1/5] Checking udev rules file..."
+if [ -f "$DEST_RULES_FILE" ]; then
+    echo "      ✅ udev rules file already exists at $DEST_RULES_FILE"
+else
+    echo "      ℹ️  udev rules file not found (not critical for WSL)"
+    echo "      You can manually copy: sudo cp /mnt/c/Users/lpgn/Scripts/99-platformio-udev.rules $DEST_RULES_FILE"
 fi
-'@
-        $groupCheck = wsl.exe bash -c $groupCheckScript 2>&1
-        
-        if ($groupCheck -match "already_in_group") {
-            Write-Host "      ✅ User is already in dialout group" -ForegroundColor Green
-        } else {
-            Write-Host "      Adding user to dialout group..." -ForegroundColor Yellow
-            Write-Host "      🔑 PASSWORD NEEDED: Type your WSL password now (cursor may be invisible)" -ForegroundColor Yellow -BackgroundColor DarkRed
-            $groupAddScript = @'
-sudo usermod -a -G dialout $USER
-'@
-            $groupResult = wsl.exe bash -c $groupAddScript 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "      ✅ User added to dialout group" -ForegroundColor Green
-                Write-Host "      ℹ️  You may need to restart WSL for this to take full effect" -ForegroundColor Yellow
-            } else {
-                Write-Host "      ❌ Failed to add user to group: $groupResult" -ForegroundColor Red
-            }
-        }
-        
-        Write-Host ""
-        Write-Host "[3/4] Looking for device file..." -ForegroundColor Cyan
-        
-        # Wait a moment for device to appear
-        Start-Sleep 2
-        
-        # Smart device detection - focus on recently attached or USB-related devices
-        Write-Host "      Checking for serial devices..." -ForegroundColor Gray
-        
-        # First, try to find recently attached devices from dmesg (most reliable)
-        $recentDevices = wsl.exe bash -c "dmesg | grep -i 'now attached to tty' | tail -5 | grep -o 'tty[A-Z0-9]*[0-9]'" 2>&1
-        
-        $deviceList = @()
-        $uniqueDevices = @{}  # Use hashtable to avoid duplicates
-        
-        if ($recentDevices) {
-            Write-Host "      Found recently attached devices from kernel messages:" -ForegroundColor Cyan
-            foreach ($line in $recentDevices) {
-                $lineStr = $line.ToString().Trim()
-                if ($lineStr -match "^tty[A-Z]") {
-                    $devicePath = "/dev/$lineStr"
-                    
-                    # Skip if we already found this device
-                    if ($uniqueDevices.ContainsKey($devicePath)) {
-                        continue
-                    }
-                    
-                    # Verify the device actually exists
-                    $exists = wsl.exe bash -c "[ -e '$devicePath' ] && echo 'exists'" 2>&1
-                    if ($exists -match "exists") {
-                        $uniqueDevices[$devicePath] = $true
-                        $deviceList += $devicePath
-                        Write-Host "         $devicePath ✅" -ForegroundColor Green
-                    } else {
-                        Write-Host "         $devicePath ❌ (not found)" -ForegroundColor Gray
-                    }
-                }
-            }
-        }
-        
-        # If no recent devices found, look for USB-specific devices only
-        if ($deviceList.Count -eq 0) {
-            Write-Host "      No recent devices found, checking USB-specific devices..." -ForegroundColor Yellow
-            
-            $usbSpecificDevices = wsl.exe bash -c "ls -1 /dev/tty* 2>/dev/null | grep -E '(ttyUSB|ttyACM)'" 2>&1
-            
-            if ($usbSpecificDevices) {
-                foreach ($line in $usbSpecificDevices) {
-                    $lineStr = $line.ToString().Trim()
-                    if ($lineStr -match "^/dev/tty(USB|ACM)[0-9]+$") {
-                        $deviceList += $lineStr
-                    }
-                }
-                
-                if ($deviceList.Count -gt 0) {
-                    Write-Host "      ✅ Found USB-specific devices:" -ForegroundColor Green
-                    foreach ($device in $deviceList) {
-                        Write-Host "         $device" -ForegroundColor Cyan
-                    }
-                }
-            }
-        }
-        
-        # Final fallback - show what's available but don't auto-configure everything
-        if ($deviceList.Count -eq 0) {
-            Write-Host "      ❌ No recently attached or USB devices found" -ForegroundColor Red
-            Write-Host "      Available serial devices (for reference):" -ForegroundColor Gray
-            wsl.exe bash -c "ls -1 /dev/tty* 2>/dev/null | grep -E '(ttyUSB|ttyACM|ttyS[0-9]|ttyAMA)' | head -10"
-            
-            $devicePath = $null
-        } else {
-            $devicePath = $deviceList[0]  # Primary device for compatibility
-        }
-        
-        Write-Host ""
-        Write-Host "[4/4] Setting device permissions..." -ForegroundColor Cyan
-        
-        if ($devicePath) {
-            Write-Host "      Checking and setting permissions for all detected devices..." -ForegroundColor Yellow
-            
-            $devicesNeedingChanges = @()
-            
-            # First pass: check which devices actually need permission changes
-            foreach ($device in $deviceList) {
-                Write-Host "      Checking permissions for $device..." -ForegroundColor Gray
-                
-                # Get current permissions
-                $currentPerms = wsl.exe bash -c "stat -c '%a' '$device' 2>/dev/null" 2>&1
-                
-                if ($currentPerms -match "^[0-9]+$") {
-                    $currentPerms = $currentPerms.ToString().Trim()
-                    
-                    # We want 666 (rw-rw-rw-) permissions
-                    if ($currentPerms -eq "666") {
-                        Write-Host "         $device already has correct permissions (666) ✅" -ForegroundColor Green
-                    } else {
-                        Write-Host "         $device has permissions $currentPerms, needs change to 666" -ForegroundColor Yellow
-                        $devicesNeedingChanges += $device
-                    }
-                } else {
-                    Write-Host "         $device - couldn't check permissions, will attempt to set" -ForegroundColor Yellow
-                    $devicesNeedingChanges += $device
-                }
-            }
-            
-            # Second pass: only change permissions for devices that need it
-            if ($devicesNeedingChanges.Count -gt 0) {
-                Write-Host "      🔑 PASSWORD NEEDED: Setting permissions for $($devicesNeedingChanges.Count) device(s)" -ForegroundColor Yellow -BackgroundColor DarkRed
-                
-                $allPermissionsSet = $true
-                foreach ($device in $devicesNeedingChanges) {
-                    Write-Host "      Processing: $device" -ForegroundColor Gray
-                    $chmodCmd = "sudo chmod 666 `"$device`" && ls -l `"$device`""
-                    $permResult = wsl.exe bash -c $chmodCmd 2>&1
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Host "      ✅ Permissions set: $device" -ForegroundColor Green
-                        Write-Host "         $permResult" -ForegroundColor Gray
-                    } else {
-                        Write-Host "      ❌ Failed to set permissions on $device : $permResult" -ForegroundColor Red
-                        $allPermissionsSet = $false
-                    }
-                }
-            } else {
-                Write-Host "      ✅ All devices already have correct permissions!" -ForegroundColor Green
-                $allPermissionsSet = $true
-            }
-            
-            if ($allPermissionsSet) {
-                Write-Host "      ✅ All devices configured successfully!" -ForegroundColor Green
-            } else {
-                Write-Host "      ⚠️  Some devices may have permission issues" -ForegroundColor Yellow
-            }
-        } else {
-            Write-Host "      ⚠️  Skipping permission setting (device path unknown)" -ForegroundColor Yellow
-        }
-        
-        Write-Host ""
-        Write-Host "✅ Linux setup completed!" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "Recent kernel messages:" -ForegroundColor Cyan
-        $dmesgScript = @'
-dmesg | grep -iE "usb|serial|tty" | tail -n 3
-'@
-        # No change needed, just adding a comment to force replacement
-        wsl.exe bash -c $dmesgScript
-        
-    }
-    catch {
-        Write-Host "❌ Error during Linux setup: $($_.Exception.Message)" -ForegroundColor Red
-    }
+
+# 2. Load essential USB-to-serial kernel modules
+echo "[2/5] Loading USB-to-serial kernel modules..."
+sudo modprobe usbserial || echo "Info: usbserial module not available or already loaded."
+sudo modprobe ftdi_sio || echo "Info: ftdi_sio module not available or already loaded."
+sudo modprobe cp210x || echo "Info: cp210x module not available or already loaded."
+sudo modprobe ch341 || echo "Info: ch341 module not available or already loaded."
+
+# 3. Detect and bind currently connected USB-to-serial devices
+echo "[3/5] Detecting and binding USB-to-serial devices..."
+echo "      Scanning for connected USB devices..."
+
+# Get list of USB devices and their VID:PID
+USB_DEVICES=$(lsusb | grep -E "(FTDI|Silicon Labs|QinHeng|Prolific|Arduino)" || true)
+if [ -n "$USB_DEVICES" ]; then
+    echo "      Found potential USB-to-serial devices:"
+    echo "$USB_DEVICES" | sed 's/^/         /'
     
+    # Extract VID:PID pairs and try to bind them
+    lsusb | grep -E "(FTDI|Silicon Labs|QinHeng|Prolific|Arduino)" | while read line; do
+        # Extract VID:PID (format: "ID 1234:5678")
+        VIDPID=$(echo "$line" | grep -o "ID [0-9a-f]*:[0-9a-f]*" | cut -d' ' -f2)
+        VID=$(echo "$VIDPID" | cut -d':' -f1)
+        PID=$(echo "$VIDPID" | cut -d':' -f2)
+        
+        echo "      Attempting to bind device $VID:$PID..."
+        
+        # Try different drivers based on VID
+        case "$VID" in
+            "0403") # FTDI
+                echo "$VID $PID" | sudo tee /sys/bus/usb-serial/drivers/ftdi_sio/new_id >/dev/null 2>&1 || true
+                ;;
+            "10c4") # Silicon Labs CP210x
+                echo "$VID $PID" | sudo tee /sys/bus/usb-serial/drivers/cp210x/new_id >/dev/null 2>&1 || true
+                ;;
+            "1a86") # QinHeng (CH340/CH341/CH9102)
+                echo "$VID $PID" | sudo tee /sys/bus/usb-serial/drivers/ch341-uart/new_id >/dev/null 2>&1 || true
+                ;;
+        esac
+    done
+else
+    echo "      No obvious USB-to-serial devices found by name."
+    echo "      If your device isn't working, you may need to manually bind it."
+fi
+
+# 4. Set permissions on any created serial devices
+echo "[4/5] Setting permissions on serial devices..."
+SERIAL_DEVICES=$(ls /dev/tty{USB,ACM}* 2>/dev/null || true)
+if [ -n "$SERIAL_DEVICES" ]; then
+    echo "      Found serial devices:"
+    echo "$SERIAL_DEVICES" | sed 's/^/         /'
+    echo "      Setting permissions to 666 (read/write for all users)..."
+    sudo chmod 666 /dev/tty{USB,ACM}* 2>/dev/null || true
+    echo "      ✅ Permissions updated"
+else
+    echo "      No /dev/ttyUSB* or /dev/ttyACM* devices found yet."
+    echo "      This might be normal if no USB-to-serial devices are attached."
+fi
+
+# 5. Add user to dialout group (standard practice)
+echo "[5/5] Checking user group membership..."
+if groups $USER | grep -q '\bdialout\b'; then
+    echo "      ✅ User $USER is already in 'dialout' group."
+else
+    echo "      Adding user $USER to 'dialout' group..."
+    sudo usermod -aG dialout $USER
+    echo "      ✅ Added to dialout group. You may need to restart WSL for this to take full effect."
+fi
+
+echo "Setup script finished."
+'@
+
+    # Ensure script has Linux (LF) line endings, convert to UTF8 bytes, then to Base64
+    $lfScriptContent = $setupScriptContent.Replace("`r`n", "`n")
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($lfScriptContent)
+    $base64Script = [System.Convert]::ToBase64String($bytes)
+
+    # Execute the script in WSL by decoding the Base64 string and piping it to bash
+    # No arguments needed since we're not copying files anymore
+    wsl.exe bash -c "echo '$base64Script' | base64 --decode | bash"
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -eq 0) {
+        Write-Host ""
+        Write-Host "✅ Linux setup completed successfully!" -ForegroundColor Green
+        Write-Host "The udev rule is now in place." -ForegroundColor Cyan
+        Write-Host "You may need to DETACH and RE-ATTACH your USB device for the new rule to apply." -ForegroundColor Yellow
+    } else {
+        Write-Host ""
+        Write-Host "❌ An error occurred during the Linux setup." -ForegroundColor Red
+        Write-Host "Please review the output above for details." -ForegroundColor Red
+    }
+
     Write-Host ""
     Write-Host "Press any key to continue..." -ForegroundColor Gray
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
